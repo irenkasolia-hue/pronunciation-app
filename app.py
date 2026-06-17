@@ -7,7 +7,7 @@ import openai
 
 st.set_page_config(page_title="Pronunciation Trainer", layout="centered")
 
-# ================= DICTIONARY =================
+# ================= WORD DATA =================
 def get_word_data(word):
     try:
         url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
@@ -37,26 +37,16 @@ init("weak", [])
 
 init("study_i", 0)
 
-init("practice_i", 0)
 init("practice_words", [])
+init("practice_i", 0)
 
-init("test_i", 0)
 init("test_words", [])
+init("test_i", 0)
 init("score", 0)
 
 init("mic_audio", None)
 
-# ================= RESET HELP =================
-def reset_practice():
-    st.session_state.practice_i = 0
-    st.session_state.practice_words = []
-
-def reset_test():
-    st.session_state.test_i = 0
-    st.session_state.test_words = []
-    st.session_state.score = 0
-
-# ================= NAVIGATION =================
+# ================= NAV =================
 st.sidebar.title("Navigation")
 
 if st.sidebar.button("Home"):
@@ -66,18 +56,17 @@ if st.sidebar.button("Study"):
     st.session_state.mode = "study"
 
 if st.sidebar.button("Practice"):
-    reset_practice()
     st.session_state.mode = "practice"
+    st.session_state.practice_words = random.sample(st.session_state.words, len(st.session_state.words)) if st.session_state.words else []
 
 if st.sidebar.button("Test"):
-    reset_test()
     st.session_state.mode = "test"
+    st.session_state.test_words = random.sample(st.session_state.words, min(10, len(st.session_state.words)))
+    st.session_state.test_i = 0
+    st.session_state.score = 0
 
 if st.sidebar.button("Speech Lab"):
     st.session_state.mode = "speech_lab"
-
-if st.sidebar.button("Result"):
-    st.session_state.mode = "result"
 
 # ================= HOME =================
 if st.session_state.mode == "home":
@@ -88,29 +77,28 @@ if st.session_state.mode == "home":
 
     if st.button("Add words"):
         new_words = [w.strip() for w in text.split("\n") if w.strip()]
-        st.session_state.words.extend(new_words)
+        st.session_state.words += new_words
 
-    st.write("Current words:")
-    st.write(st.session_state.words)
+    st.write("📦 Word bank:")
+
+    for w in st.session_state.words:
+        col1, col2 = st.columns([4,1])
+        col1.write(w)
+
+        if col2.button("❌", key=f"del_{w}"):
+            st.session_state.words.remove(w)
+            st.rerun()
 
 # ================= STUDY =================
 elif st.session_state.mode == "study":
 
-    st.header("📚 Study Mode")
+    st.header("📚 Study")
 
     words = st.session_state.words
 
     if not words:
-        st.warning("No words added")
+        st.warning("No words")
         st.stop()
-
-    col1, col2 = st.columns(2)
-
-    if col1.button("⬅ Prev"):
-        st.session_state.study_i = max(0, st.session_state.study_i - 1)
-
-    if col2.button("Next ➡"):
-        st.session_state.study_i = min(len(words) - 1, st.session_state.study_i + 1)
 
     w = words[st.session_state.study_i]
 
@@ -118,38 +106,41 @@ elif st.session_state.mode == "study":
 
     st.subheader(w)
     st.write("IPA:", ipa)
+    st.info(definition)
 
     if audio:
         st.audio(audio)
 
-    st.info(definition)
+    col1, col2, col3 = st.columns(3)
 
-    st.write(f"Card {st.session_state.study_i + 1} / {len(words)}")
+    if col1.button("⬅"):
+        st.session_state.study_i = max(0, st.session_state.study_i - 1)
+        st.rerun()
+
+    if col2.button("➡"):
+        st.session_state.study_i = min(len(words)-1, st.session_state.study_i + 1)
+        st.rerun()
+
+    if col3.button("✔ I know"):
+        st.session_state.study_i = min(len(words)-1, st.session_state.study_i + 1)
+        st.rerun()
 
 # ================= PRACTICE =================
 elif st.session_state.mode == "practice":
 
-    st.header("🎧 Practice Mode")
+    st.header("🎧 Practice (2 modes)")
 
-    words = st.session_state.words
-
+    words = st.session_state.practice_words
     if not words:
-        st.warning("No words")
+        st.warning("Go to Home first")
         st.stop()
-
-    if not st.session_state.practice_words:
-        st.session_state.practice_words = words.copy()
-        random.shuffle(st.session_state.practice_words)
 
     w = st.session_state.practice_words[st.session_state.practice_i]
 
+    mode = st.radio("Task type", ["Listen → Type", "See → Speak"])
+
     ipa, definition, audio = get_word_data(w)
 
-    mode = st.radio("Mode", ["Listen → Type", "See → Speak"])
-
-    st.write(f"Word #{st.session_state.practice_i + 1}")
-
-    # ================= LISTEN =================
     if mode == "Listen → Type":
 
         if audio:
@@ -157,116 +148,105 @@ elif st.session_state.mode == "practice":
 
         ans = st.text_input("Type word")
 
-        col1, col2, col3 = st.columns(3)
-
-        if col1.button("Submit"):
+        if st.button("Submit"):
             if ans.lower().strip() == w.lower():
                 st.success("Correct")
             else:
-                st.error(f"Correct answer: {w}")
+                st.error(f"Wrong → {w}")
                 st.session_state.weak.append(w)
 
             st.session_state.practice_i += 1
             st.rerun()
 
-        if col2.button("🔊 Replay"):
-            if audio:
-                st.audio(audio)
-
-        if col3.button("⏭ Skip"):
-            st.session_state.practice_i += 1
-            st.rerun()
-
-    # ================= SPEAK =================
     else:
 
-        st.write("Say:", w)
+        st.subheader(w)
 
         spoken = st.text_input("What did you say?")
 
-        col1, col2 = st.columns(2)
-
-        if col1.button("Submit"):
+        if st.button("Submit"):
             if spoken.lower().strip() == w.lower():
-                st.success("Correct pronunciation")
+                st.success("Correct")
             else:
-                st.error(f"Check word: {w}")
+                st.error(f"Wrong pronunciation → {w}")
                 st.session_state.weak.append(w)
 
             st.session_state.practice_i += 1
             st.rerun()
 
-        if col2.button("🔁 Try again"):
-            st.rerun()
-
-# ================= TEST =================
+# ================= TEST (FIXED 10 WORDS + 2 TASK TYPES) =================
 elif st.session_state.mode == "test":
 
-    st.header("🟥 Test Mode")
+    st.header("🟥 Test (10 words)")
 
-    words = st.session_state.words
+    words = st.session_state.test_words
 
     if not words:
-        st.warning("No words")
+        st.warning("No test words")
         st.stop()
 
-    if not st.session_state.test_words:
-        st.session_state.test_words = random.sample(words, min(10, len(words)))
+    if st.session_state.test_i >= len(words):
+        st.success(f"Finished! Score: {st.session_state.score}/{len(words)}")
+        st.stop()
 
-    w = st.session_state.test_words[st.session_state.test_i]
+    w = words[st.session_state.test_i]
 
-    ans = st.text_input("Type word")
+    task = st.radio("Task", ["Listen → Type", "See → Speak"])
 
-    if st.button("Submit"):
+    ipa, definition, audio = get_word_data(w)
 
-        if ans.lower().strip() == w.lower():
-            st.session_state.score += 1
-            st.success("Correct")
-        else:
-            st.error(f"Wrong: {w}")
-            st.session_state.weak.append(w)
+    if task == "Listen → Type":
 
-        st.session_state.test_i += 1
-        st.rerun()
+        if audio:
+            st.audio(audio)
 
-# ================= RESULT =================
-elif st.session_state.mode == "result":
+        ans = st.text_input("Type word")
 
-    st.header("📊 Results")
+        if st.button("Submit"):
+            if ans.lower().strip() == w.lower():
+                st.session_state.score += 1
+                st.success("Correct")
+            else:
+                st.error(f"Wrong → {w}")
+                st.session_state.weak.append(w)
 
-    total = len(st.session_state.test_words)
-    score = st.session_state.score
+            st.session_state.test_i += 1
+            st.rerun()
 
-    percent = int((score / total) * 100) if total else 0
+    else:
 
-    grade = "A" if percent >= 90 else "B" if percent >= 80 else "C" if percent >= 70 else "D" if percent >= 60 else "E" if percent >= 50 else "F"
+        st.subheader("Say the word")
 
-    st.subheader(f"Grade: {grade}")
-    st.write(f"{percent}% ({score}/{total})")
+        spoken = st.text_input("What did you say?")
 
-    st.markdown("### Weak words")
-    st.write(set(st.session_state.weak))
+        if st.button("Submit"):
+            if spoken.lower().strip() == w.lower():
+                st.session_state.score += 1
+                st.success("Correct")
+            else:
+                st.error(f"Wrong pronunciation → {w}")
+                st.session_state.weak.append(w)
+
+            st.session_state.test_i += 1
+            st.rerun()
 
 # ================= SPEECH LAB =================
 elif st.session_state.mode == "speech_lab":
 
     st.header("🎤 Speech Lab")
 
-    st.write("Record or upload audio for pronunciation analysis")
-
-    uploaded_audio = st.file_uploader("Upload audio (mp3/wav/webm)", type=["mp3", "wav", "webm"])
+    uploaded = st.file_uploader("Upload audio", type=["mp3","wav","webm"])
 
     audio_source = None
 
     if st.session_state.mic_audio:
         audio_source = ("mic", st.session_state.mic_audio)
 
-    elif uploaded_audio:
-        audio_source = ("upload", uploaded_audio)
+    elif uploaded:
+        audio_source = ("upload", uploaded)
 
     transcript = ""
 
-    # ================= TRANSCRIPTION =================
     if audio_source:
 
         if audio_source[0] == "upload":
@@ -295,29 +275,26 @@ elif st.session_state.mode == "speech_lab":
 
         st.session_state.mic_audio = None
 
-    # ================= ANALYSIS =================
     def highlight(text, targets):
-        words = text.split()
         t = set(targets)
-
         out = []
-        for w in words:
-            clean = w.strip(".,!?;:").lower()
 
-            if clean in t:
+        for w in text.split():
+            c = w.strip(".,!?;:").lower()
+            if c in t:
                 out.append(f"🟢 {w}")
             else:
                 out.append(f"⚪ {w}")
 
         return " ".join(out)
 
-    if st.button("Analyze speech"):
+    if st.button("Analyze"):
 
         if not transcript:
             st.warning("No speech detected")
             st.stop()
 
-        st.markdown("### Highlighted transcript")
+        st.markdown("### Highlighted")
         st.write(highlight(transcript, st.session_state.words))
 
         spoken = set([w.strip(".,!?;:").lower() for w in transcript.split()])
@@ -325,9 +302,9 @@ elif st.session_state.mode == "speech_lab":
 
         missing = targets - spoken
 
-        st.markdown("### Missing / mispronounced words")
+        st.markdown("### Missing words")
 
         if missing:
             st.error(", ".join(missing))
         else:
-            st.success("All target words detected 🎉")
+            st.success("Perfect coverage 🎉")
