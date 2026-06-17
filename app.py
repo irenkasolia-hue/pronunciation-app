@@ -4,6 +4,7 @@ import requests
 import tempfile
 import base64
 import openai
+from streamlit.components.v1 import html as components_html
 
 st.set_page_config(page_title="Pronunciation Trainer", layout="centered")
 
@@ -71,7 +72,7 @@ if st.sidebar.button("Speech Lab"):
 # ================= HOME =================
 if st.session_state.mode == "home":
 
-    st.title("🧠 Pronunciation Trainer")
+    st.title("🎧 Pronunciation Trainer")
 
     text = st.text_area("Enter words (one per line)")
 
@@ -81,7 +82,7 @@ if st.session_state.mode == "home":
 
     st.write("📦 Word bank:")
 
-    for w in st.session_state.words:
+    for w in list(st.session_state.words):
         col1, col2 = st.columns([4,1])
         col1.write(w)
 
@@ -121,23 +122,31 @@ elif st.session_state.mode == "study":
         st.session_state.study_i = min(len(words)-1, st.session_state.study_i + 1)
         st.rerun()
 
-    if col3.button("✔ I know"):
+    # "I don't know" button to mark weak words and advance
+    if col3.button("✖ I don't know"):
+        if w not in st.session_state.weak:
+            st.session_state.weak.append(w)
         st.session_state.study_i = min(len(words)-1, st.session_state.study_i + 1)
         st.rerun()
 
 # ================= PRACTICE =================
 elif st.session_state.mode == "practice":
 
-    st.header("🎧 Practice (2 modes)")
+    st.header("🎧 Practice (Listen→Type / Speak→Auto)")
 
     words = st.session_state.practice_words
     if not words:
         st.warning("Go to Home first")
         st.stop()
 
+    # wrap index to avoid crash
+    if st.session_state.practice_i >= len(words):
+        st.success("Practice complete")
+        st.stop()
+
     w = st.session_state.practice_words[st.session_state.practice_i]
 
-    mode = st.radio("Task type", ["Listen → Type", "See → Speak"])
+    mode = st.radio("Task type", ["Listen → Type", "Speak → Auto (free)"])
 
     ipa, definition, audio = get_word_data(w)
 
@@ -146,33 +155,106 @@ elif st.session_state.mode == "practice":
         if audio:
             st.audio(audio)
 
-        ans = st.text_input("Type word")
+        ans_key = f"practice_input_{st.session_state.practice_i}"
+        ans = st.text_input("Type word", key=ans_key)
 
-        if st.button("Submit"):
+        col1, col2, col3 = st.columns(3)
+
+        if col1.button("Submit", key=f"submit_pr_{st.session_state.practice_i}"):
             if ans.lower().strip() == w.lower():
-                st.success("Correct")
+                st.success("✔ Correct")
             else:
-                st.error(f"Wrong → {w}")
-                st.session_state.weak.append(w)
+                st.error(f"✖ Wrong — correct: {w}")
+                if w not in st.session_state.weak:
+                    st.session_state.weak.append(w)
 
+            st.session_state.practice_i += 1
+            st.rerun()
+
+        if col2.button("🔊 Replay", key=f"replay_pr_{st.session_state.practice_i}"):
+            if audio:
+                st.audio(audio)
+
+        if col3.button("⏭ Skip", key=f"skip_pr_{st.session_state.practice_i}"):
             st.session_state.practice_i += 1
             st.rerun()
 
     else:
+        st.subheader(f"Speak now: {w}")
+        st.markdown("_This uses your browser's free speech recognition (Chrome/Edge recommended)._")
 
-        st.subheader(w)
+        # components.html will return the transcript (if browser supports postMessage)
+        js = f"""
+        <div>
+          <button id="start">🎙 Start</button>
+          <button id="retry" style="margin-left:8px;">🔁 Retry</button>
+          <p id="status">Press Start and speak the word once.</p>
+        </div>
+        <script>
+        const startBtn = document.getElementById('start');
+        const retryBtn = document.getElementById('retry');
+        const status = document.getElementById('status');
+        function send(value) {{
+            // post message back to Streamlit
+            window.parent.postMessage({{isStreamlitMessage: true, value: value}}, '*');
+        }}
+        function startRec() {{
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if(!SpeechRecognition){{
+                status.innerText = 'SpeechRecognition not supported in this browser.';
+                send('');
+                return;
+            }}
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+            status.innerText = 'Listening...';
+            recognition.onresult = function(event) {{
+                const t = event.results[0][0].transcript;
+                status.innerText = 'Heard: ' + t;
+                send(t);
+            }};
+            recognition.onerror = function(e) {{
+                status.innerText = 'Error: ' + e.error;
+                send('');
+            }};
+            recognition.onend = function() {{
+                // do nothing
+            }};
+            recognition.start();
+        }}
+        startBtn.onclick = startRec;
+        retryBtn.onclick = startRec;
+        </script>
+        """
 
-        spoken = st.text_input("What did you say?")
+        transcript = components_html(js, height=160)
 
-        if st.button("Submit"):
-            if spoken.lower().strip() == w.lower():
-                st.success("Correct")
-            else:
-                st.error(f"Wrong pronunciation → {w}")
-                st.session_state.weak.append(w)
+        # transcript will be None until the iframe posts a message; show instructions
+        if transcript is None:
+            st.info("Click Start and speak. After speaking, wait a moment for the result to appear below.")
+        else:
+            st.subheader("Detected:")
+            st.write(transcript)
 
-            st.session_state.practice_i += 1
-            st.rerun()
+            # allow manual correction before submit
+            corr = st.text_input("If needed, edit the detected text", value=transcript)
+
+            col1, col2 = st.columns([1,1])
+            if col1.button("Submit pronunciation", key=f"submit_speak_pr_{st.session_state.practice_i}"):
+                if corr.lower().strip() == w.lower():
+                    st.success("✔ Correct pronunciation")
+                else:
+                    st.error(f"✖ Check pronunciation — expected: {w}")
+                    if w not in st.session_state.weak:
+                        st.session_state.weak.append(w)
+
+                st.session_state.practice_i += 1
+                st.rerun()
+
+            if col2.button("Retry", key=f"retry_speak_pr_{st.session_state.practice_i}"):
+                st.rerun()
 
 # ================= TEST (FIXED 10 WORDS + 2 TASK TYPES) =================
 elif st.session_state.mode == "test":
@@ -191,7 +273,7 @@ elif st.session_state.mode == "test":
 
     w = words[st.session_state.test_i]
 
-    task = st.radio("Task", ["Listen → Type", "See → Speak"])
+    task = st.radio("Task", ["Listen → Type", "Speak → Auto (free)"])
 
     ipa, definition, audio = get_word_data(w)
 
@@ -200,111 +282,92 @@ elif st.session_state.mode == "test":
         if audio:
             st.audio(audio)
 
-        ans = st.text_input("Type word")
+        ans_key = f"test_input_{st.session_state.test_i}"
+        ans = st.text_input("Type word", key=ans_key)
 
-        if st.button("Submit"):
+        if st.button("Submit", key=f"submit_test_lt_{st.session_state.test_i}"):
             if ans.lower().strip() == w.lower():
                 st.session_state.score += 1
-                st.success("Correct")
+                st.success("✔ Correct")
             else:
-                st.error(f"Wrong → {w}")
-                st.session_state.weak.append(w)
+                st.error(f"✖ Wrong — correct: {w}")
+                if w not in st.session_state.weak:
+                    st.session_state.weak.append(w)
 
             st.session_state.test_i += 1
             st.rerun()
 
     else:
+        st.subheader(f"Speak now: {w}")
+        st.markdown("_This uses your browser's free speech recognition (Chrome/Edge recommended)._")
 
-        st.subheader("Say the word")
+        js2 = f"""
+        <div>
+          <button id="start2">🎙 Start</button>
+          <button id="retry2" style="margin-left:8px;">🔁 Retry</button>
+          <p id="status2">Press Start and speak the word once.</p>
+        </div>
+        <script>
+        const startBtn2 = document.getElementById('start2');
+        const retryBtn2 = document.getElementById('retry2');
+        const status2 = document.getElementById('status2');
+        function send2(value) {{
+            window.parent.postMessage({{isStreamlitMessage: true, value: value}}, '*');
+        }}
+        function startRec2() {{
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if(!SpeechRecognition){{
+                status2.innerText = 'SpeechRecognition not supported in this browser.';
+                send2('');
+                return;
+            }}
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+            status2.innerText = 'Listening...';
+            recognition.onresult = function(event) {{
+                const t = event.results[0][0].transcript;
+                status2.innerText = 'Heard: ' + t;
+                send2(t);
+            }};
+            recognition.onerror = function(e) {{
+                status2.innerText = 'Error: ' + e.error;
+                send2('');
+            }};
+            recognition.start();
+        }}
+        startBtn2.onclick = startRec2;
+        retryBtn2.onclick = startRec2;
+        </script>
+        """
 
-        spoken = st.text_input("What did you say?")
+        transcript2 = components_html(js2, height=160)
 
-        if st.button("Submit"):
-            if spoken.lower().strip() == w.lower():
-                st.session_state.score += 1
-                st.success("Correct")
-            else:
-                st.error(f"Wrong pronunciation → {w}")
-                st.session_state.weak.append(w)
-
-            st.session_state.test_i += 1
-            st.rerun()
-
-# ================= SPEECH LAB =================
-elif st.session_state.mode == "speech_lab":
-
-    st.header("🎤 Speech Lab")
-
-    uploaded = st.file_uploader("Upload audio", type=["mp3","wav","webm"])
-
-    audio_source = None
-
-    if st.session_state.mic_audio:
-        audio_source = ("mic", st.session_state.mic_audio)
-
-    elif uploaded:
-        audio_source = ("upload", uploaded)
-
-    transcript = ""
-
-    if audio_source:
-
-        if audio_source[0] == "upload":
-
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                tmp.write(audio_source[1].read())
-                path = tmp.name
-
+        if transcript2 is None:
+            st.info("Click Start and speak. After speaking, wait a moment for the result to appear below.")
         else:
+            st.subheader("Detected:")
+            st.write(transcript2)
 
-            audio_b64 = audio_source[1].split(",")[1]
-            audio_bytes = base64.b64decode(audio_b64)
+            corr2 = st.text_input("If needed, edit the detected text", value=transcript2)
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
-                tmp.write(audio_bytes)
-                path = tmp.name
+            col1, col2 = st.columns([1,1])
+            if col1.button("Submit", key=f"submit_test_sp_{st.session_state.test_i}"):
+                if corr2.lower().strip() == w.lower():
+                    st.session_state.score += 1
+                    st.success("✔ Correct")
+                else:
+                    st.error(f"✖ Wrong pronunciation — expected: {w}")
+                    if w not in st.session_state.weak:
+                        st.session_state.weak.append(w)
 
-        with open(path, "rb") as f:
-            transcript = openai.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
-                file=f
-            ).text
+                st.session_state.test_i += 1
+                st.rerun()
 
-        st.subheader("Transcript")
-        st.write(transcript)
+            if col2.button("Retry", key=f"retry_test_sp_{st.session_state.test_i}"):
+                st.rerun()
 
-        st.session_state.mic_audio = None
-
-    def highlight(text, targets):
-        t = set(targets)
-        out = []
-
-        for w in text.split():
-            c = w.strip(".,!?;:").lower()
-            if c in t:
-                out.append(f"🟢 {w}")
-            else:
-                out.append(f"⚪ {w}")
-
-        return " ".join(out)
-
-    if st.button("Analyze"):
-
-        if not transcript:
-            st.warning("No speech detected")
-            st.stop()
-
-        st.markdown("### Highlighted")
-        st.write(highlight(transcript, st.session_state.words))
-
-        spoken = set([w.strip(".,!?;:").lower() for w in transcript.split()])
-        targets = set(st.session_state.words)
-
-        missing = targets - spoken
-
-        st.markdown("### Missing words")
-
-        if missing:
-            st.error(", ".join(missing))
-        else:
-            st.success("Perfect coverage 🎉")
+# ================= FALLBACK / END =================
+else:
+    st.write("Mode not implemented")
