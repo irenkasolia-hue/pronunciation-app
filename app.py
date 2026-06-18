@@ -1,16 +1,17 @@
 import streamlit as st
 import random
+import requests
 import tempfile
-import base64
-import openai
-import streamlit.components.v1 as components
+from openai import OpenAI
+
+client = OpenAI()
 
 st.set_page_config(page_title="Pronunciation Trainer", layout="centered")
 
-# ================= SAFE INIT =================
-def init(key, value):
-    if key not in st.session_state:
-        st.session_state[key] = value
+# ================= STATE =================
+def init(k, v):
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 init("mode", "home")
 init("words", [])
@@ -27,69 +28,28 @@ init("score", 0)
 
 init("answered", False)
 
-# ================= DICTIONARY =================
+# ================= WORD API =================
 def get_word_data(word):
     try:
         url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
-        res = requests.get(url, timeout=5).json()
+        r = requests.get(url).json()
 
-        ipa = res[0].get("phonetic", "N/A")
-        definition = res[0]["meanings"][0]["definitions"][0]["definition"]
+        ipa = r[0].get("phonetic", "N/A")
+        definition = r[0]["meanings"][0]["definitions"][0]["definition"]
 
         audio = ""
-        for p in res[0].get("phonetics", []):
+        for p in r[0].get("phonetics", []):
             if p.get("audio"):
                 audio = p["audio"]
                 break
 
         return ipa, definition, audio
     except:
-        return "N/A", "No definition available", ""
+        return "N/A", "No definition", ""
 
-# ================= MIC COMPONENT =================
-def mic_recorder():
-    return components.html("""
-    <button onclick="startRec()">🎤 Record</button>
-    <button onclick="stopRec()">⏹ Stop</button>
-    <p id="status"></p>
+# ================= NAV =================
+st.sidebar.title("Menu")
 
-    <script>
-    let recorder;
-    let chunks = [];
-
-    async function startRec() {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        recorder = new MediaRecorder(stream);
-        chunks = [];
-
-        recorder.ondataavailable = e => chunks.push(e.data);
-
-        recorder.onstop = async () => {
-            const blob = new Blob(chunks, { type: "audio/webm" });
-
-            const reader = new FileReader();
-            reader.readAsDataURL(blob);
-
-            reader.onloadend = () => {
-                window.parent.postMessage({
-                    type: "streamlit:setComponentValue",
-                    value: reader.result
-                }, "*");
-            };
-        };
-
-        recorder.start();
-        document.getElementById("status").innerText = "Recording...";
-    }
-
-    function stopRec() {
-        recorder.stop();
-        document.getElementById("status").innerText = "Processing...";
-    }
-    </script>
-    """, height=120)
-
-# ================= RESET HELPERS =================
 def reset_practice():
     st.session_state.practice_words = st.session_state.words.copy()
     random.shuffle(st.session_state.practice_words)
@@ -105,9 +65,6 @@ def reset_test():
     st.session_state.score = 0
     st.session_state.answered = False
 
-# ================= NAV =================
-st.sidebar.title("Navigation")
-
 if st.sidebar.button("Home"):
     st.session_state.mode = "home"
 
@@ -122,44 +79,33 @@ if st.sidebar.button("Test"):
     reset_test()
     st.session_state.mode = "test"
 
-if st.sidebar.button("Speech Lab"):
-    st.session_state.mode = "speech_lab"
-
 # ================= HOME =================
 if st.session_state.mode == "home":
 
     st.title("🧠 Pronunciation Trainer")
 
-    text = st.text_area("Enter words (one per line)")
+    text = st.text_area("Enter words")
 
-    if st.button("Add words"):
-        new_words = [w.strip() for w in text.split("\n") if w.strip()]
-        st.session_state.words += new_words
+    if st.button("Add"):
+        st.session_state.words += [w.strip() for w in text.split("\n") if w.strip()]
 
-    st.write("Word bank:")
-    for w in st.session_state.words:
-        col1, col2 = st.columns([4,1])
-        col1.write(w)
-        if col2.button("❌", key=w):
-            st.session_state.words.remove(w)
-            st.rerun()
+    st.write(st.session_state.words)
 
 # ================= STUDY =================
 elif st.session_state.mode == "study":
 
-    st.header("📚 Study Mode")
+    st.header("📚 Study")
 
     if not st.session_state.words:
-        st.warning("No words added")
+        st.warning("No words")
         st.stop()
 
-    st.session_state.study_i %= len(st.session_state.words)
-    w = st.session_state.words[st.session_state.study_i]
+    w = st.session_state.words[st.session_state.study_i % len(st.session_state.words)]
 
     ipa, definition, audio = get_word_data(w)
 
     st.subheader(w)
-    st.write("IPA:", ipa)
+    st.write(ipa)
     st.info(definition)
 
     if audio:
@@ -175,51 +121,49 @@ elif st.session_state.mode == "study":
         st.session_state.study_i += 1
         st.rerun()
 
-# ================= PRACTICE =================
+# ================= PRACTICE (SAFE MIC VERSION) =================
 elif st.session_state.mode == "practice":
 
-    st.header("🎧 Practice Mode")
+    st.header("🎧 Practice (SAFE MODE)")
+
+    if not st.session_state.practice_words:
+        st.session_state.practice_words = st.session_state.words.copy()
 
     words = st.session_state.practice_words
     if not words:
-        st.warning("No words available")
         st.stop()
 
-    st.session_state.practice_i %= len(words)
-    w = words[st.session_state.practice_i]
+    w = words[st.session_state.practice_i % len(words)]
 
     st.subheader(f"Say: {w}")
 
-    audio_data = mic_recorder()
+    audio = st.audio_input("🎤 Record your pronunciation")
 
-    col1, col2 = st.columns(2)
+    if audio and not st.session_state.answered:
 
-    if audio_data and isinstance(audio_data, str) and "," in audio_data:
-
-        audio_b64 = audio_data.split(",")[1]
-        audio_bytes = base64.b64decode(audio_b64)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
-            tmp.write(audio_bytes)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(audio.read())
             path = tmp.name
 
         with open(path, "rb") as f:
-            transcript = openai.audio.transcriptions.create(
+            result = client.audio.transcriptions.create(
                 model="gpt-4o-mini-transcribe",
                 file=f
-            ).text.lower().strip()
+            )
 
-        st.write("You said:", transcript)
+        text = result.text.lower().strip()
 
-        if not st.session_state.answered:
-            if transcript == w.lower():
-                st.success("✔ Correct")
-            else:
-                st.error(f"✖ Incorrect → {w}")
-                st.session_state.weak.append(w)
-            st.session_state.answered = True
+        st.write("You said:", text)
 
-    if col1.button("Next"):
+        if text == w.lower():
+            st.success("✔ Correct")
+        else:
+            st.error(f"✖ Wrong → {w}")
+            st.session_state.weak.append(w)
+
+        st.session_state.answered = True
+
+    if st.button("Next"):
         st.session_state.practice_i += 1
         st.session_state.answered = False
         st.rerun()
@@ -227,76 +171,46 @@ elif st.session_state.mode == "practice":
 # ================= TEST =================
 elif st.session_state.mode == "test":
 
-    st.header("🟥 Test Mode")
+    st.header("🟥 Test")
 
     words = st.session_state.test_words
 
-    if not words:
-        st.warning("No test words")
-        st.stop()
-
     if st.session_state.test_i >= len(words):
-        st.success(f"Finished ✔ Score: {st.session_state.score}/{len(words)}")
+        st.success(f"Score: {st.session_state.score}/{len(words)}")
         st.stop()
 
     w = words[st.session_state.test_i]
 
-    st.subheader(f"Question {st.session_state.test_i+1}/{len(words)}")
+    st.subheader(f"Q{st.session_state.test_i+1}/{len(words)}")
     st.write(f"Say: {w}")
 
-    audio_data = mic_recorder()
+    audio = st.audio_input("🎤 Speak")
 
-    col1, col2 = st.columns(2)
+    if audio and not st.session_state.answered:
 
-    if audio_data and isinstance(audio_data, str) and "," in audio_data:
-
-        audio_b64 = audio_data.split(",")[1]
-        audio_bytes = base64.b64decode(audio_b64)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
-            tmp.write(audio_bytes)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(audio.read())
             path = tmp.name
 
         with open(path, "rb") as f:
-            transcript = openai.audio.transcriptions.create(
+            result = client.audio.transcriptions.create(
                 model="gpt-4o-mini-transcribe",
                 file=f
-            ).text.lower().strip()
+            )
 
-        st.write("You said:", transcript)
+        text = result.text.lower().strip()
 
-        if not st.session_state.answered:
-            if transcript == w.lower():
-                st.success("✔ Correct")
-                st.session_state.score += 1
-            else:
-                st.error(f"✖ Incorrect → {w}")
-                st.session_state.weak.append(w)
-            st.session_state.answered = True
+        st.write("You said:", text)
 
-    if col1.button("Next"):
+        if text == w.lower():
+            st.success("✔ Correct")
+            st.session_state.score += 1
+        else:
+            st.error(f"✖ Wrong → {w}")
+
+        st.session_state.answered = True
+
+    if st.button("Next"):
         st.session_state.test_i += 1
         st.session_state.answered = False
         st.rerun()
-
-# ================= SPEECH LAB =================
-elif st.session_state.mode == "speech_lab":
-
-    st.header("🎤 Speech Lab")
-
-    uploaded = st.file_uploader("Upload audio", type=["mp3","wav","webm"])
-
-    if uploaded:
-
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            tmp.write(uploaded.read())
-            path = tmp.name
-
-        with open(path, "rb") as f:
-            transcript = openai.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
-                file=f
-            ).text
-
-        st.subheader("Transcript")
-        st.write(transcript)
